@@ -41,3 +41,7 @@ docker compose down
 ```
 
 Vibration only works in browsers that support it (mostly Chrome on Android).
+
+## GitHub Pages
+
+The game is published at https://exenza.github.io/sphere/. Every push to `main` that changes `html/` runs `.github/workflows/pages.yml`, which copies `html/` to the `gh-pages` branch that Pages serves.
