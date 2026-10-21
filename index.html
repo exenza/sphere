@@ -104,6 +104,7 @@
     <p class="sub">Pull the sphere out of its socket. Every new sphere grips with a different strength.</p>
   </div>
   <div class="stats">
+    <div class="stat"><b id="score">0</b><span>score</span></div>
     <div class="stat"><b id="count">0</b><span>freed</span></div>
     <div class="toggles">
       <button id="sound" class="toggle" type="button" aria-pressed="true">SOUND ON</button>
@@ -115,7 +116,7 @@
 <div class="hud bottom">
   <div class="history" id="history" aria-label="Resistance of recent spheres"></div>
   <div id="readout" aria-live="polite"></div>
-  <div class="hint" id="hint">Grab the sphere and pull.</div>
+  <div class="hint" id="hint">Grab the sphere and pull. Aim it at a corner for points.</div>
 </div>
 
 <script>
@@ -123,6 +124,7 @@
   const cv = document.getElementById('stage');
   const ctx = cv.getContext('2d');
   const $count = document.getElementById('count');
+  const $score = document.getElementById('score');
   const $readout = document.getElementById('readout');
   const $history = document.getElementById('history');
   const $hint = document.getElementById('hint');
@@ -158,8 +160,15 @@
   const S = { state: 'spawning', R: 0, breakPull: 0, gain: 1, follow: .3, spring: .1,
     pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, tension: 0, spawnT: 0, flyT: 0,
     grabStart: 0, peak: 0, cracks: [], trail: [] };
-  let freed = 0;
+  let freed = 0, score = 0;
   const history = [];
+  const flashes = [];
+  // Corner hit = touching an x-wall and a y-wall within a few ms of each other (ms of flight time).
+  const CORNER_TIERS = [
+    { max: 17, name: 'Perfect', pts: 100 },
+    { max: 70, name: 'Great', pts: 40 },
+    { max: 150, name: 'Close', pts: 15 },
+  ];
   const pointer = { x: 0, y: 0, down: false, id: null, px: 0, py: 0, vx: 0, vy: 0 };
   const keys = new Set();
   const kbd = { x: 0, y: 0 };
@@ -174,6 +183,7 @@
     S.spring = lerp(0.06, 0.32, R);    // how hard it snaps back when let go
     S.pos = { x: 0, y: 0 }; S.vel = { x: 0, y: 0 };
     S.tension = 0; S.peak = 0; S.trail = [];
+    S.lastX = null; S.lastY = null; S.chain = 0;
     S.state = 'spawning'; S.spawnT = 0;
     S.cracks = Array.from({ length: 7 }, (_, i) => {
       const a = (i / 7) * Math.PI * 2 + Math.random() * 0.6;
@@ -306,13 +316,24 @@
       gg.gain.setValueAtTime(0.12, now); gg.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
       o.connect(gg); gg.connect(ac.destination); o.start(now); o.stop(now + 0.2);
     }
+    function chime(tierName) {
+      if (!ac || !on) return;
+      const notes = tierName === 'Perfect' ? [660, 880, 1320] : tierName === 'Great' ? [660, 990] : [620];
+      notes.forEach((f, i) => {
+        const o = ac.createOscillator(), gg = ac.createGain(), t0 = ac.currentTime + i * 0.08;
+        o.type = 'triangle'; o.frequency.value = f;
+        gg.gain.setValueAtTime(0.0001, t0); gg.gain.exponentialRampToValueAtTime(0.18, t0 + 0.01);
+        gg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.35);
+        o.connect(gg); gg.connect(ac.destination); o.start(t0); o.stop(t0 + 0.4);
+      });
+    }
     function toggle() {
       on = !on;
       if (!on && g) g.gain.setTargetAtTime(0, ac.currentTime, 0.02);
       if (on) unlock();
       return on;
     }
-    return { unlock, start, tension, creak, snap, thud, pop, toggle };
+    return { unlock, start, tension, creak, snap, thud, pop, chime, toggle };
   })();
   $sound.addEventListener('click', () => {
     const on = audio.toggle();
@@ -370,12 +391,32 @@
   });
   const bump = v => { audio.thud(v); haptics.thud(v); };
 
+  // ---- corner scoring ----
+  function wallHit(axis, v) {
+    bump(v);
+    if (axis === 'x') S.lastX = S.flyT; else S.lastY = S.flyT;
+    if (S.lastX === null || S.lastY === null) return;
+    const gap = Math.abs(S.lastX - S.lastY);
+    const tier = CORNER_TIERS.find(t => gap <= t.max);
+    if (!tier) return;
+    S.lastX = S.lastY = null;   // each pair of wall hits scores once
+    S.chain++;
+    // stronger grips launch faster, so they pay more; extra corners in one flight multiply
+    const pts = Math.round(tier.pts * (1 + S.R)) * S.chain;
+    score += pts; $score.textContent = score;
+    const x = cx + S.pos.x < W / 2 ? 0 : W, y = cy + S.pos.y < H / 2 ? 0 : H;
+    flashes.push({ x, y, tier, pts, chain: S.chain, t0: performance.now() });
+    $readout.innerHTML += ` · <strong>${tier.name} corner +${pts}</strong>${S.chain > 1 ? ` (×${S.chain})` : ''}`;
+    audio.chime(tier.name);
+    haptics.pulse(tier.name === 'Perfect' ? [20, 30, 20, 30, 70] : tier.name === 'Great' ? [20, 30, 40] : [25]);
+  }
+
   // ---- simulation ----
   let last = performance.now();
   function step(dt) {
     if (S.state === 'spawning') {
       S.spawnT += dt / (reduceMotion ? 200 : 650);
-      if (S.spawnT >= 1) { S.spawnT = 1; S.state = 'held'; $hint.textContent = 'Grab the sphere and pull.'; audio.pop(); haptics.pulse(10); }
+      if (S.spawnT >= 1) { S.spawnT = 1; S.state = 'held'; $hint.textContent = 'Grab the sphere and pull. Aim it at a corner for points.'; audio.pop(); haptics.pulse(10); }
     }
 
     if (S.state === 'grabbed') {
@@ -435,10 +476,10 @@
       S.pos.x += S.vel.x * f; S.pos.y += S.vel.y * f;
       S.tension = Math.max(0, S.tension - 0.05 * f);
       const ax = cx + S.pos.x, ay = cy + S.pos.y;
-      if (ax < radius) { S.pos.x = radius - cx; S.vel.x = Math.abs(S.vel.x) * 0.7; bump(Math.abs(S.vel.x)); }
-      if (ax > W - radius) { S.pos.x = W - radius - cx; S.vel.x = -Math.abs(S.vel.x) * 0.7; bump(Math.abs(S.vel.x)); }
-      if (ay < radius) { S.pos.y = radius - cy; S.vel.y = Math.abs(S.vel.y) * 0.7; bump(Math.abs(S.vel.y)); }
-      if (ay > H - radius) { S.pos.y = H - radius - cy; S.vel.y = -Math.abs(S.vel.y) * 0.7; bump(Math.abs(S.vel.y)); }
+      if (ax < radius) { S.pos.x = radius - cx; S.vel.x = Math.abs(S.vel.x) * 0.7; wallHit('x', Math.abs(S.vel.x)); }
+      if (ax > W - radius) { S.pos.x = W - radius - cx; S.vel.x = -Math.abs(S.vel.x) * 0.7; wallHit('x', Math.abs(S.vel.x)); }
+      if (ay < radius) { S.pos.y = radius - cy; S.vel.y = Math.abs(S.vel.y) * 0.7; wallHit('y', Math.abs(S.vel.y)); }
+      if (ay > H - radius) { S.pos.y = H - radius - cy; S.vel.y = -Math.abs(S.vel.y) * 0.7; wallHit('y', Math.abs(S.vel.y)); }
       S.trail.push([ax, ay]); if (S.trail.length > 18) S.trail.shift();
       if (S.flyT > 1800) spawn();
     }
@@ -576,6 +617,34 @@
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(cx, cy, radius * (1.05 + p * 0.6), 0, Math.PI * 2); ctx.stroke();
     }
+
+    // corner hit flashes: rings spreading from the corner, plus the points
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      // rAF's timestamp can be slightly older than the performance.now() the hit was stamped with
+      const f = flashes[i], age = Math.max(0, (now - f.t0) / 1300);
+      if (age >= 1) { flashes.splice(i, 1); continue; }
+      const col = f.tier.name === 'Perfect' ? C.strain : C.sphere;
+      const fade = 1 - age;
+      const rings = f.tier.name === 'Perfect' ? 3 : f.tier.name === 'Great' ? 2 : 1;
+      ctx.lineWidth = 3;
+      for (let r = 0; r < rings; r++) {
+        const rr = Math.max(1, (reduceMotion ? 0.6 : age) * minDim * 0.35 + r * 22);
+        ctx.strokeStyle = rgba(col, 0.6 * fade);
+        ctx.beginPath(); ctx.arc(f.x, f.y, rr, 0, Math.PI * 2); ctx.stroke();
+      }
+      const ix = f.x === 0 ? 1 : -1, iy = f.y === 0 ? 1 : -1;
+      const tx = f.x + ix * minDim * 0.3, ty = f.y + iy * minDim * 0.3 - (reduceMotion ? 0 : age * 24);
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, fade * 1.6);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = rgba(col);
+      ctx.font = `700 ${Math.round(Math.max(18, minDim * 0.05))}px Unbounded, system-ui, sans-serif`;
+      ctx.fillText(f.tier.name.toUpperCase(), tx, ty);
+      ctx.fillStyle = rgba(C.fg);
+      ctx.font = `500 ${Math.round(Math.max(14, minDim * 0.032))}px "IBM Plex Mono", ui-monospace, monospace`;
+      ctx.fillText(`+${f.pts}${f.chain > 1 ? `  ×${f.chain}` : ''}`, tx, ty + Math.max(22, minDim * 0.05));
+      ctx.restore();
+    }
   }
 
   function loop(now) {
@@ -586,6 +655,7 @@
 
   function start(data) {
     if (data && data.freed) { freed = data.freed; $count.textContent = freed; }
+    if (data && data.score) { score = data.score; $score.textContent = score; }
     if (data && Array.isArray(data.history)) {
       history.push(...data.history.slice(-12));
       $history.innerHTML = history.map(r => `<i style="--r:${r}" title="${r}%"></i>`).join('');
@@ -593,7 +663,7 @@
     spawn();
     requestAnimationFrame(t => { last = t; loop(t); });
   }
-  window.claude?.hot?.snapshot?.(() => ({ freed, history: history.slice() }));
+  window.claude?.hot?.snapshot?.(() => ({ freed, score, history: history.slice() }));
   window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
 })();
 </script>
