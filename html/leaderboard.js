@@ -101,6 +101,22 @@
   addEventListener('keydown', e => { if (e.key === 'Escape' && open) setOpen(false); });
 
   const status = msg => { $('lb-status').textContent = msg || ''; };
+
+  // The top bar's "season rating": shown only while signed in, '–' until the first throw this season.
+  function showRating(rating) {
+    const box = document.getElementById('rating-stat'), b = document.getElementById('rating');
+    if (!box || !b) return;
+    box.hidden = !user;
+    b.textContent = rating == null ? '–' : `${Math.round(rating * 100)}%`;
+  }
+  async function loadMyRating() {
+    if (!user) { showRating(null); return; }
+    const s = await sb.from('seasons').select('id').is('ended_at', null).order('number', { ascending: false }).limit(1);
+    const id = s.data?.[0]?.id;
+    if (!id) { showRating(null); return; }
+    const m = await sb.from('leaderboard').select('rating').eq('season_id', id).eq('user_id', user.id).maybeSingle();
+    showRating(m.data ? m.data.rating : null);
+  }
   const pct = r => `${Math.round((r || 0) * 100)}%`;
   const num = n => Number(n || 0).toLocaleString('en-US');
   function avatar(url) {
@@ -203,6 +219,7 @@
       }
       renderRows(rows);
       renderMe(mine, rank);
+      if (user) showRating(mine ? mine.rating : null);
 
       const w = await sb.from('season_winners').select('*').order('season_number', { ascending: false }).order('place').limit(15);
       if (w.error) throw w.error;
@@ -225,12 +242,13 @@
   window.addEventListener('sphere:throw', async e => {
     if (!sb || !user) return;
     const d = e.detail;
-    const { error } = await sb.rpc('submit_throw', {
+    const { data, error } = await sb.rpc('submit_throw', {
       p_resistance: d.resistance, p_held_ms: d.heldMs, p_corners: d.corners,
       p_perfects: d.perfects, p_best_miss: d.bestMiss,
     });
-    if (error) status(`Throw not saved: ${error.message}`);
-    else if (open) refresh();
+    if (error) { status(`Throw not saved: ${error.message}`); return; }
+    showRating(data?.rating ?? null);
+    if (open) refresh();
   });
 
   // ---------- start ----------
@@ -246,6 +264,7 @@
       btn.textContent = user ? 'LEADERBOARD ●' : 'LEADERBOARD';
       if (event === 'SIGNED_IN' && location.search.includes('code=')) history.replaceState(null, '', location.pathname);
       if (open) refresh(); else renderMe(null, null);
+      loadMyRating().catch(() => showRating(null));
     });
   };
   document.head.appendChild(lib);
