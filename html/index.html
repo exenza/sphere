@@ -181,6 +181,9 @@
     S.gain = 0.78 - 0.6 * R;           // how much the sphere follows your hand
     S.follow = lerp(0.38, 0.07, R);    // how sluggishly it responds
     S.spring = lerp(0.06, 0.32, R);    // how hard it snaps back when let go
+    S.yieldRate = lerp(2.2, 0.5, R);   // strain per second the grip gives up, so ~0.5s to 2s of steady pull
+    S.slipMargin = lerp(0.9, 0.45, R); // how far your hand may run ahead of the strain before it slips
+    S.strain = 0;
     S.pos = { x: 0, y: 0 }; S.vel = { x: 0, y: 0 };
     S.tension = 0; S.peak = 0; S.trail = [];
     S.lastX = null; S.lastY = null; S.chain = 0;
@@ -200,7 +203,7 @@
   }
 
   function grab() {
-    S.state = 'grabbed'; S.grabStart = performance.now();
+    S.state = 'grabbed'; S.grabStart = performance.now(); S.strain = 0;
     cv.classList.add('grabbing'); $hint.textContent = 'Keep pulling…';
     audio.start();
   }
@@ -225,6 +228,15 @@
     audio.snap(S.R);
     haptics.snap(S.R);
   }
+  // Pulled faster than the grip can give: the sphere slips out of the hand and springs back.
+  function slip() {
+    pointer.down = false; pointer.id = null; keys.clear();
+    S.state = 'returning'; S.vel = { x: 0, y: 0 };
+    cv.classList.remove('grabbing');
+    $hint.textContent = 'Too fast. It slipped out of your hand. Pull steadily.';
+    audio.creak(1);
+    haptics.stop(); haptics.pulse([8, 25, 8]);
+  }
   const label = R => R < .2 ? 'loose' : R < .4 ? 'soft' : R < .6 ? 'firm' : R < .8 ? 'stubborn' : 'welded';
 
   // ---- input ----
@@ -239,7 +251,7 @@
     // remember where on the sphere it was grabbed so it doesn't jump
     pointer.ox = x - (cx + S.pos.x / Math.max(S.gain, .01) * 0); pointer.oy = 0;
     pointer.anchorX = x - cx - S.pos.x; pointer.anchorY = y - cy - S.pos.y;
-    cv.setPointerCapture(e.pointerId);
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
     grab();
   });
   cv.addEventListener('pointermove', e => {
@@ -431,27 +443,44 @@
         let dx = 0, dy = 0; keys.forEach(k => { dx += dirKeys[k][0]; dy += dirKeys[k][1]; });
         const speed = 3.2 * (dt / 16.7);
         kbd.x += dx * speed; kbd.y += dy * speed;
+        // keys never outrun the grip, so keyboard players can't slip
+        const kMax = (S.strain + S.slipMargin * 0.5) * S.breakPull, kLen = Math.hypot(kbd.x, kbd.y);
+        if (kLen > kMax) { kbd.x *= kMax / kLen; kbd.y *= kMax / kLen; }
         pullX = kbd.x / Math.max(S.gain, .05); pullY = kbd.y / Math.max(S.gain, .05);
         // keyboard drives the hand directly: convert back below
         pullX = kbd.x; pullY = kbd.y;
         pointer.vx = dx * 4; pointer.vy = dy * 4;
       }
       const pull = Math.hypot(pullX, pullY);
-      const t = pull / S.breakPull;
-      S.tension = clamp(t, 0, 1);
-      S.peak = Math.max(S.peak, S.tension);
-      // rubbery response: follows less as it nears the limit
-      const ease = S.gain * (1 - 0.35 * S.tension * S.tension);
-      const tx = pullX * ease, ty = pullY * ease;
-      const k = 1 - Math.pow(1 - S.follow, dt / 16.7);
-      S.pos.x = lerp(S.pos.x, tx, k); S.pos.y = lerp(S.pos.y, ty, k);
-      audio.tension(S.tension, true);
-      haptics.tension(S.tension, performance.now());
-      if (Math.random() < S.tension * S.tension * 0.18 * (0.5 + S.R)) audio.creak(S.tension);
-      if (t >= 1) {
-        const d = Math.hypot(S.pos.x, S.pos.y) || 1;
-        breakFree(S.pos.x / d, S.pos.y / d);
-        pointer.down = false; keys.clear();
+      const target = pull / S.breakPull;
+      // Strain chases the pull at a limited rate, so a quick flick can't skip past the grip.
+      const sec = dt / 1000;
+      if (target > S.strain) S.strain = Math.min(target, S.strain + S.yieldRate * sec);
+      else S.strain = Math.max(target, S.strain - 3 * sec);
+      const ahead = target - S.strain;
+      if (ahead > S.slipMargin) {
+        slip();
+      } else {
+        if (ahead > S.slipMargin * 0.6) $hint.textContent = 'Easy… pull too fast and it slips.';
+        else if (S.strain > 0.05) $hint.textContent = 'Keep pulling…';
+        S.tension = clamp(S.strain, 0, 1);
+        S.peak = Math.max(S.peak, S.tension);
+        // the sphere moves with the strain, not the hand: it lags behind a fast pull
+        const ux = pull ? pullX / pull : 0, uy = pull ? pullY / pull : 0;
+        const eff = Math.min(pull, S.strain * S.breakPull);
+        // rubbery response: follows less as it nears the limit
+        const ease = S.gain * (1 - 0.35 * S.tension * S.tension);
+        const tx = ux * eff * ease, ty = uy * eff * ease;
+        const k = 1 - Math.pow(1 - S.follow, dt / 16.7);
+        S.pos.x = lerp(S.pos.x, tx, k); S.pos.y = lerp(S.pos.y, ty, k);
+        audio.tension(S.tension, true);
+        haptics.tension(S.tension, performance.now());
+        if (Math.random() < S.tension * S.tension * 0.18 * (0.5 + S.R)) audio.creak(S.tension);
+        if (S.strain >= 1) {
+          const d = Math.hypot(S.pos.x, S.pos.y) || 1;
+          breakFree(S.pos.x / d, S.pos.y / d);
+          pointer.down = false; keys.clear();
+        }
       }
     } else {
       audio.tension(0, false);

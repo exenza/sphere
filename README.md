@@ -2,6 +2,10 @@
 
 A small sensory game: pull the sphere out of its socket. Each new sphere grips with a random resistance.
 
+## Pulling
+
+The grip gives way at a limited speed: about half a second of steady pulling for a loose sphere, about two seconds for a welded one. If you pull much faster than that, for example with a quick flick, the sphere slips out of your hand and springs back.
+
 ## Scoring
 
 Aim the sphere so it flies into a corner. A corner counts when it touches both walls almost at the same moment:
