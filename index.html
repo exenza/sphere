@@ -112,7 +112,7 @@
   </div>
   <div class="stats">
     <div class="stat"><b id="form">–</b><span>perfect · last 20</span></div>
-    <div class="stat"><b id="score">0</b><span>score</span></div>
+    <div class="stat" id="rating-stat" hidden><b id="rating">–</b><span>season rating</span></div>
     <div class="stat"><b id="count">0</b><span>freed</span></div>
     <div class="toggles">
       <button id="sound" class="toggle" type="button" aria-pressed="true">SOUND ON</button>
@@ -132,7 +132,6 @@
   const cv = document.getElementById('stage');
   const ctx = cv.getContext('2d');
   const $count = document.getElementById('count');
-  const $score = document.getElementById('score');
   const $form = document.getElementById('form');
   const $readout = document.getElementById('readout');
   const $history = document.getElementById('history');
@@ -182,7 +181,7 @@
   const S = { state: 'spawning', R: 0, breakPull: 0, gain: 1, follow: .3, spring: .1,
     pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, tension: 0, spawnT: 0, flyT: 0,
     grabStart: 0, peak: 0, cracks: [], trail: [] };
-  let freed = 0, score = 0;
+  let freed = 0;
   const history = [];
   const flashes = [];
   const shards = [];
@@ -211,9 +210,9 @@
   // Corner hit = when the sphere touches one wall, how far it is from touching the other,
   // in sphere radii. Distance, not time, so a fast launch doesn't make corners easier.
   const CORNER_TIERS = [
-    { max: 0.2, name: 'Perfect', pts: 100 },
-    { max: 0.6, name: 'Great', pts: 40 },
-    { max: 1.2, name: 'Close', pts: 15 },
+    { max: 0.2, name: 'Perfect' },
+    { max: 0.6, name: 'Great' },
+    { max: 1.2, name: 'Close' },
   ];
   // Form: perfect throws among the last 20 (1 = the throw hit at least one Perfect corner).
   const FORM_SIZE = 20;
@@ -239,7 +238,7 @@
     S.sat = 0.6 + Math.random() * 0.25;
     S.pos = { x: 0, y: 0 }; S.vel = { x: 0, y: 0 };
     S.tension = 0; S.peak = 0; S.trail = [];
-    S.chain = 0; S.lastCorner = -1e9; S.corners = []; S.flame = null;
+    S.lastCorner = -1e9; S.corners = []; S.flame = null;
     S.state = 'spawning'; S.spawnT = 0;
     S.cracks = Array.from({ length: 7 }, (_, i) => {
       const a = (i / 7) * Math.PI * 2 + Math.random() * 0.6;
@@ -521,29 +520,25 @@
       return;
     }
 
-    S.chain++;
     S.corners.push({ tier: tier.name, miss });
-    // stronger grips are harder to pull, so they pay more; extra corners in one flight multiply
-    const pts = Math.round(tier.pts * (1 + S.R)) * S.chain;
-    score += pts; $score.textContent = score;
-    let sub = `+${pts}${S.chain > 1 ? `  ×${S.chain}` : ''}`;
+    let sub = '';
     if (tier.name === 'Perfect') {
       const opp = OPPOSITE[k];
       if (ice[opp]) {
         // the flaming corner: the sphere catches fire and heads for the ice
         ignite(opp);
-        sub += '  · on fire';
-        $readout.innerHTML += ` · <strong>Perfect corner +${pts}, sphere on fire</strong>`;
+        sub = 'on fire';
+        $readout.innerHTML += ` · <strong>Perfect corner, sphere on fire</strong>`;
       } else {
         const max = lerp(ICE_STRENGTH[0], ICE_STRENGTH[1], Math.random());
         ice[k] = { hp: max, max, cracks: [] };
-        sub += '  · frozen';
-        $readout.innerHTML += ` · <strong>Perfect corner +${pts}, corner frozen</strong>`;
+        sub = 'frozen';
+        $readout.innerHTML += ` · <strong>Perfect corner, corner frozen</strong>`;
         setTimeout(() => audio.freeze(), 120);
       }
       saveIce();
     } else {
-      $readout.innerHTML += ` · <strong>${tier.name} corner +${pts}</strong>${S.chain > 1 ? ` (×${S.chain})` : ''}`;
+      $readout.innerHTML += ` · <strong>${tier.name} corner</strong>`;
     }
     flashes.push({ x, y, label: tier.name.toUpperCase(), sub, col: tier.name === 'Perfect' ? 'strain' : 'body',
       rings: tier.name === 'Perfect' ? 3 : tier.name === 'Great' ? 2 : 1, t0 });
@@ -1010,7 +1005,6 @@
 
   function start(data) {
     if (data && data.freed) { freed = data.freed; $count.textContent = freed; }
-    if (data && data.score) { score = data.score; $score.textContent = score; }
     if (data && Array.isArray(data.history)) {
       history.push(...data.history.slice(-12));
       $history.innerHTML = history.map(r => `<i style="--r:${r}" title="${r}%"></i>`).join('');
@@ -1019,7 +1013,7 @@
     spawn();
     requestAnimationFrame(t => { last = t; loop(t); });
   }
-  window.claude?.hot?.snapshot?.(() => ({ freed, score, history: history.slice() }));
+  window.claude?.hot?.snapshot?.(() => ({ freed, history: history.slice() }));
   window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
 })();
 </script>
