@@ -7,7 +7,7 @@ It runs on [Supabase](https://supabase.com) (free tier is enough). The game stay
 ## How it works
 
 - **A throw** is one freed sphere, from the pull to the end of its flight.
-- **A perfect throw** hits at least one Perfect corner.
+- **A perfect throw** hits at least one Perfect corner. Frozen corners don't count (see Ice in the README).
 - **Rating** is the share of perfect throws in the current season, adjusted for how many throws back it up (the Wilson lower bound at 90% confidence). One lucky throw rates about 27%; 10 perfect out of 20 about 33%; 100 out of 200 about 44%.
 - **Seasons** end when all players together reach **5,000 counted throws**, or after **30 days**, whichever comes first. The next throw starts a new season. Each player counts toward the 5,000 for at most **500 throws** a season, so nobody can end a season early on their own; throws past that still count for their own rating.
 - **Past seasons** keep their top three in the panel.

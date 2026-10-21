@@ -24,6 +24,8 @@
     --sphere-hi: #C9D4FF;
     --strain: #E5483A;
     --socket: #BDB7CF;
+    --ice: #8FCBE6;
+    --ice-edge: #3E8FB8;
     --font-display: "Unbounded", "Arial Rounded MT Bold", system-ui, sans-serif;
     --font-body: "Atkinson Hyperlegible", system-ui, -apple-system, sans-serif;
     --font-data: "IBM Plex Mono", ui-monospace, Menlo, monospace;
@@ -31,13 +33,13 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #15131D; --bg-deep: #0E0C14; --fg: #ECE9F5; --muted: #8E88A6;
-      --sphere: #6E8BFF; --sphere-hi: #E3E9FF; --strain: #FF6F5C; --socket: #34304A;
+      --sphere: #6E8BFF; --sphere-hi: #E3E9FF; --strain: #FF6F5C; --socket: #34304A; --ice: #A9DDF2; --ice-edge: #E4F6FF;
       color-scheme: dark;
     }
   }
   :root[data-theme="dark"] {
     --bg: #15131D; --bg-deep: #0E0C14; --fg: #ECE9F5; --muted: #8E88A6;
-    --sphere: #6E8BFF; --sphere-hi: #E3E9FF; --strain: #FF6F5C; --socket: #34304A;
+    --sphere: #6E8BFF; --sphere-hi: #E3E9FF; --strain: #FF6F5C; --socket: #34304A; --ice: #A9DDF2; --ice-edge: #E4F6FF;
     color-scheme: dark;
   }
   html, body { height: 100%; }
@@ -152,7 +154,7 @@
   const css = getComputedStyle(document.documentElement);
   const hex = s => { s = s.trim().replace('#', ''); if (s.length === 3) s = [...s].map(c => c + c).join(''); const n = parseInt(s, 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
   let C = {};
-  function readColors() { for (const k of ['bg', 'bg-deep', 'fg', 'muted', 'sphere', 'sphere-hi', 'strain', 'socket']) C[k] = hex(css.getPropertyValue('--' + k) || '#888'); }
+  function readColors() { for (const k of ['bg', 'bg-deep', 'fg', 'muted', 'sphere', 'sphere-hi', 'strain', 'socket', 'ice', 'ice-edge']) C[k] = hex(css.getPropertyValue('--' + k) || '#888'); }
   readColors();
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => setTimeout(readColors, 0));
   new MutationObserver(() => setTimeout(readColors, 0)).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -181,6 +183,27 @@
   let freed = 0, score = 0;
   const history = [];
   const flashes = [];
+  const shards = [];
+  // Ice: a Perfect freezes its corner; a Perfect on the opposite corner thaws it.
+  // Hits on ice do damage = impact speed × sphere weight (heavier for stronger grips) and add up.
+  const OPPOSITE = { tl: 'br', br: 'tl', tr: 'bl', bl: 'tr' };
+  const ICE_STRENGTH = [12, 45];                 // random per freeze
+  const weight = R => lerp(0.6, 1.6, R);
+  let ice = {};                                  // corner -> { hp, max, cracks }
+  const iceCracks = n => Array.from({ length: n }, () => {
+    const a = Math.random() * Math.PI / 2, len = 0.35 + Math.random() * 0.65, pts = [[0, 0]];
+    let r = 0, ang = a;
+    while (r < len) { r += 0.08 + Math.random() * 0.12; ang += (Math.random() - .5) * 0.5; pts.push([Math.cos(ang) * r, Math.sin(ang) * r]); }
+    return pts;
+  });
+  try {
+    const saved = JSON.parse(localStorage.getItem('sphere.ice') || '{}');
+    for (const k of Object.keys(OPPOSITE)) {
+      const v = saved[k];
+      if (v && v.hp > 0 && v.max >= v.hp) ice[k] = { hp: v.hp, max: v.max, cracks: iceCracks(Math.round(8 * (1 - v.hp / v.max))) };
+    }
+  } catch (e) {}
+  const saveIce = () => { try { localStorage.setItem('sphere.ice', JSON.stringify(Object.fromEntries(Object.entries(ice).map(([k, v]) => [k, { hp: v.hp, max: v.max }])))); } catch (e) {} };
   // Corner hit = when the sphere touches one wall, how far it is from touching the other,
   // in sphere radii. Distance, not time, so a fast launch doesn't make corners easier.
   const CORNER_TIERS = [
@@ -371,7 +394,23 @@
       if (on) unlock();
       return on;
     }
-    return { unlock, start, tension, creak, snap, thud, pop, chime, toggle };
+    function tone(f0, f1, dur, vol, type = 'sine', delay = 0) {
+      const o = ac.createOscillator(), gg = ac.createGain(), t0 = ac.currentTime + delay;
+      o.type = type; o.frequency.setValueAtTime(f0, t0); o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+      gg.gain.setValueAtTime(0.0001, t0); gg.gain.exponentialRampToValueAtTime(vol, t0 + 0.01);
+      gg.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(gg); gg.connect(ac.destination); o.start(t0); o.stop(t0 + dur + 0.05);
+    }
+    // ice: a glassy shimmer when a corner freezes, a dripping glide when it thaws
+    function freeze() { if (!ac || !on) return; [1760, 2349, 2637, 3520].forEach((f, i) => tone(f, f * 1.01, 0.6, 0.05, 'sine', i * 0.05)); burst(0.4, 6000, 4, 0.05); }
+    function thaw() { if (!ac || !on) return; tone(1400, 500, 0.5, 0.08, 'sine'); tone(900, 350, 0.6, 0.05, 'triangle', 0.08); }
+    function crackle(dmg) { if (!ac || !on) return; for (let i = 0; i < 3; i++) setTimeout(() => burst(0.03 + Math.random() * 0.03, 2500 + Math.random() * 3500, 8, Math.min(0.35, 0.08 + dmg * 0.01)), i * 35); }
+    function shatter() {
+      if (!ac || !on) return;
+      burst(0.5, 4200, 0.8, 0.5); burst(0.25, 1500, 1, 0.3);
+      for (let i = 0; i < 7; i++) tone(2000 + Math.random() * 3000, 1500 + Math.random() * 2000, 0.25, 0.04, 'sine', 0.05 + i * 0.045);
+    }
+    return { unlock, start, tension, creak, snap, thud, pop, chime, freeze, thaw, crackle, shatter, toggle };
   })();
   $sound.addEventListener('click', () => {
     const on = audio.toggle();
@@ -430,21 +469,78 @@
   const bump = v => { audio.thud(v); haptics.thud(v); };
 
   // ---- corner scoring ----
-  function cornerHit(miss, ax, ay) {
+  function cornerHit(miss, ax, ay, speed) {
     if (S.flyT - S.lastCorner < 200) return;   // the second wall of the same corner
     const tier = CORNER_TIERS.find(t => miss <= t.max);
     if (!tier) return;
     S.lastCorner = S.flyT;
+    const k = (ay < H / 2 ? 't' : 'b') + (ax < W / 2 ? 'l' : 'r');
+    const x = ax < W / 2 ? 0 : W, y = ay < H / 2 ? 0 : H;
+    const t0 = performance.now();
+
+    // A frozen corner scores nothing; the hit chips the ice instead.
+    if (ice[k]) {
+      const dmg = speed * weight(S.R);
+      const c = ice[k];
+      c.hp -= dmg;
+      if (c.hp <= 0) {
+        delete ice[k];
+        burstShards(x, y, 18);
+        flashes.push({ x, y, label: 'SHATTERED', sub: `${Math.round(dmg)} impact`, col: 'ice', rings: 3, t0 });
+        $readout.innerHTML += ` · <strong>Ice shattered</strong>`;
+        audio.shatter(); haptics.pulse([40, 30, 60, 30, 90]);
+      } else {
+        c.cracks.push(...iceCracks(1 + Math.round(dmg / 8)));
+        burstShards(x, y, 4);
+        const left = Math.round((c.hp / c.max) * 100);
+        flashes.push({ x, y, label: 'CRACKED', sub: `${Math.round(dmg)} impact · ${left}% left`, col: 'ice', rings: 1, t0 });
+        $readout.innerHTML += ` · <strong>Ice cracked, ${left}% left</strong>`;
+        audio.crackle(dmg); haptics.pulse([15]);
+      }
+      saveIce();
+      return;
+    }
+
     S.chain++;
     S.corners.push({ tier: tier.name, miss });
     // stronger grips are harder to pull, so they pay more; extra corners in one flight multiply
     const pts = Math.round(tier.pts * (1 + S.R)) * S.chain;
     score += pts; $score.textContent = score;
-    const x = ax < W / 2 ? 0 : W, y = ay < H / 2 ? 0 : H;
-    flashes.push({ x, y, tier, pts, chain: S.chain, t0: performance.now() });
-    $readout.innerHTML += ` · <strong>${tier.name} corner +${pts}</strong>${S.chain > 1 ? ` (×${S.chain})` : ''}`;
+    let sub = `+${pts}${S.chain > 1 ? `  ×${S.chain}` : ''}`;
+    if (tier.name === 'Perfect') {
+      const opp = OPPOSITE[k];
+      if (ice[opp]) {
+        delete ice[opp];
+        sub += '  · thawed';
+        const ox = opp[1] === 'l' ? 0 : W, oy = opp[0] === 't' ? 0 : H;
+        flashes.push({ x: ox, y: oy, label: 'THAWED', sub: '', col: 'ice', rings: 2, t0 });
+        $readout.innerHTML += ` · <strong>Perfect corner +${pts}, opposite corner thawed</strong>`;
+        setTimeout(() => audio.thaw(), 120);
+      } else {
+        const max = lerp(ICE_STRENGTH[0], ICE_STRENGTH[1], Math.random());
+        ice[k] = { hp: max, max, cracks: [] };
+        sub += '  · frozen';
+        $readout.innerHTML += ` · <strong>Perfect corner +${pts}, corner frozen</strong>`;
+        setTimeout(() => audio.freeze(), 120);
+      }
+      saveIce();
+    } else {
+      $readout.innerHTML += ` · <strong>${tier.name} corner +${pts}</strong>${S.chain > 1 ? ` (×${S.chain})` : ''}`;
+    }
+    flashes.push({ x, y, label: tier.name.toUpperCase(), sub, col: tier.name === 'Perfect' ? 'strain' : 'body',
+      rings: tier.name === 'Perfect' ? 3 : tier.name === 'Great' ? 2 : 1, t0 });
     audio.chime(tier.name);
     haptics.pulse(tier.name === 'Perfect' ? [20, 30, 20, 30, 70] : tier.name === 'Great' ? [20, 30, 40] : [25]);
+  }
+
+  function burstShards(x, y, n) {
+    if (reduceMotion) return;
+    const ix = x === 0 ? 1 : -1, iy = y === 0 ? 1 : -1;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI / 2, sp = 2 + Math.random() * 7;
+      shards.push({ x: x + ix * radius * 0.8, y: y + iy * radius * 0.8, vx: ix * Math.cos(a) * sp, vy: iy * Math.sin(a) * sp,
+        rot: Math.random() * 6, vr: (Math.random() - .5) * 0.4, size: 4 + Math.random() * 9, t0: performance.now() });
+    }
   }
 
   // A throw ends when its flight does: update the form meter and tell any listener (the leaderboard).
@@ -572,7 +668,7 @@
         S.vel.y = (ay < radius ? 1 : -1) * Math.abs(vy0) * 0.7;
         bump(Math.abs(S.vel.y));
       }
-      if (miss !== null) cornerHit(miss, ax, ay);
+      if (miss !== null) cornerHit(miss, ax, ay, Math.hypot(vx0, vy0));
       S.trail.push([ax, ay]); if (S.trail.length > 18) S.trail.shift();
       if (S.flyT > 1800) { finishThrow(); spawn(); }
     }
@@ -620,6 +716,8 @@
       for (let i = 0; i < n; i++) { const p = c.pts[i]; const x = cx + p[0] * radius, y = cy + p[1] * radius; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
       ctx.stroke();
     }
+
+    drawIce(now);
 
     // sphere geometry
     let sx = cx + S.pos.x, sy = cy + S.pos.y;
@@ -717,11 +815,10 @@
       // rAF's timestamp can be slightly older than the performance.now() the hit was stamped with
       const f = flashes[i], age = Math.max(0, (now - f.t0) / 1300);
       if (age >= 1) { flashes.splice(i, 1); continue; }
-      const col = f.tier.name === 'Perfect' ? C.strain : SC.body;
+      const col = f.col === 'strain' ? C.strain : f.col === 'ice' ? C['ice-edge'] : SC.body;
       const fade = 1 - age;
-      const rings = f.tier.name === 'Perfect' ? 3 : f.tier.name === 'Great' ? 2 : 1;
       ctx.lineWidth = 3;
-      for (let r = 0; r < rings; r++) {
+      for (let r = 0; r < f.rings; r++) {
         const rr = Math.max(1, (reduceMotion ? 0.6 : age) * minDim * 0.35 + r * 22);
         ctx.strokeStyle = rgba(col, 0.6 * fade);
         ctx.beginPath(); ctx.arc(f.x, f.y, rr, 0, Math.PI * 2); ctx.stroke();
@@ -733,10 +830,64 @@
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillStyle = rgba(col);
       ctx.font = `700 ${Math.round(Math.max(18, minDim * 0.05))}px Unbounded, system-ui, sans-serif`;
-      ctx.fillText(f.tier.name.toUpperCase(), tx, ty);
-      ctx.fillStyle = rgba(C.fg);
-      ctx.font = `500 ${Math.round(Math.max(14, minDim * 0.032))}px "IBM Plex Mono", ui-monospace, monospace`;
-      ctx.fillText(`+${f.pts}${f.chain > 1 ? `  ×${f.chain}` : ''}`, tx, ty + Math.max(22, minDim * 0.05));
+      ctx.fillText(f.label, tx, ty);
+      if (f.sub) {
+        ctx.fillStyle = rgba(C.fg);
+        ctx.font = `500 ${Math.round(Math.max(14, minDim * 0.032))}px "IBM Plex Mono", ui-monospace, monospace`;
+        ctx.fillText(f.sub, tx, ty + Math.max(22, minDim * 0.05));
+      }
+      ctx.restore();
+    }
+
+    // ice shards flying off a cracked or shattered corner
+    for (let i = shards.length - 1; i >= 0; i--) {
+      const s = shards[i], age = Math.max(0, (now - s.t0) / 900);
+      if (age >= 1) { shards.splice(i, 1); continue; }
+      s.x += s.vx; s.y += s.vy; s.vx *= 0.96; s.vy *= 0.96; s.rot += s.vr;
+      ctx.save();
+      ctx.translate(s.x, s.y); ctx.rotate(s.rot);
+      ctx.fillStyle = rgba(C.ice, 0.85 * (1 - age));
+      ctx.strokeStyle = rgba(C['ice-edge'], 0.9 * (1 - age)); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, -s.size); ctx.lineTo(s.size * 0.6, s.size * 0.5); ctx.lineTo(-s.size * 0.5, s.size * 0.4); ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // Frozen corners: a quarter disc of ice, thicker for stronger ice, fading and cracking as it's damaged.
+  function drawIce(now) {
+    const iceR = radius * 2.8;
+    for (const [k, c] of Object.entries(ice)) {
+      const x = k[1] === 'l' ? 0 : W, y = k[0] === 't' ? 0 : H;
+      const ix = x === 0 ? 1 : -1, iy = y === 0 ? 1 : -1;
+      const health = clamp(c.hp / c.max, 0, 1);
+      const thick = (c.max - ICE_STRENGTH[0]) / (ICE_STRENGTH[1] - ICE_STRENGTH[0]);
+      const r = iceR * (0.85 + 0.3 * thick);
+      const start = Math.atan2(0, ix), end = Math.atan2(iy, 0);
+      const a0 = Math.min(start, end), a1 = Math.max(start, end);
+      const [s0, s1] = Math.abs(a1 - a0) > Math.PI ? [a1, a0 + Math.PI * 2] : [a0, a1];
+      ctx.save();
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, rgba(C['ice-edge'], (0.35 + 0.35 * thick) * (0.4 + 0.6 * health)));
+      g.addColorStop(0.7, rgba(C.ice, (0.45 + 0.3 * thick) * (0.4 + 0.6 * health)));
+      g.addColorStop(1, rgba(C.ice, 0.15 * health));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r, s0, s1); ctx.closePath(); ctx.fill();
+      // frosty rim with a slow glint
+      ctx.strokeStyle = rgba(C['ice-edge'], 0.7 * (0.5 + 0.5 * health)); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, r, s0, s1); ctx.stroke();
+      if (!reduceMotion) {
+        const gl = s0 + ((now / 2600) % 1) * (s1 - s0);
+        ctx.strokeStyle = rgba([255, 255, 255], 0.5 * health); ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(x, y, r - 1, gl - 0.08, gl + 0.08); ctx.stroke();
+      }
+      // cracks, in the corner's own orientation
+      ctx.strokeStyle = rgba(mix(C['ice-edge'], C.fg, 0.4), 0.75); ctx.lineWidth = 1.3; ctx.lineCap = 'round';
+      for (const pts of c.cracks) {
+        ctx.beginPath();
+        pts.forEach(([px, py], i) => { const X = x + ix * px * r, Y = y + iy * py * r; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+        ctx.stroke();
+      }
       ctx.restore();
     }
   }
