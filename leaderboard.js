@@ -47,6 +47,7 @@
       padding: 7px 4px; border-bottom: 1px solid var(--socket); font-size: 14px;
     }
     #lb li:last-child { border-bottom: 0; }
+    #lb li.empty { display: block; padding: 0; }
     #lb li.mine { background: var(--bg-deep); border-radius: 6px; }
     #lb li .rank, #lb li .rate, #lb li .count { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
     #lb li .rank { color: var(--muted); text-align: right; }
