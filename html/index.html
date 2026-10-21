@@ -155,6 +155,19 @@
   const rgba = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
   const lerp = (a, b, t) => a + (b - a) * t;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const hsl = (h, s, l) => {
+    const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+    const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+    return [f(0), f(8), f(4)].map(v => Math.round(v * 255));
+  };
+  // the current sphere's colors, lighter on a dark background so it keeps its contrast
+  function sphereColors() {
+    const dark = (C.bg[0] * 0.299 + C.bg[1] * 0.587 + C.bg[2] * 0.114) < 128;
+    return {
+      body: hsl(S.hue, S.sat, dark ? 0.66 : 0.5),
+      hi: hsl(S.hue, S.sat * 0.6, dark ? 0.92 : 0.86),
+    };
+  }
 
   // ---- game state ----
   const S = { state: 'spawning', R: 0, breakPull: 0, gain: 1, follow: .3, spring: .1,
@@ -184,6 +197,9 @@
     S.yieldRate = lerp(2.2, 0.5, R);   // strain per second the grip gives up, so ~0.5s to 2s of steady pull
     S.slipMargin = lerp(0.9, 0.45, R); // how far your hand may run ahead of the strain before it slips
     S.strain = 0;
+    // a fresh color each spawn; hues near red are skipped so the strain color still reads
+    S.hue = 40 + Math.random() * 290;
+    S.sat = 0.6 + Math.random() * 0.25;
     S.pos = { x: 0, y: 0 }; S.vel = { x: 0, y: 0 };
     S.tension = 0; S.peak = 0; S.trail = [];
     S.lastX = null; S.lastY = null; S.chain = 0;
@@ -517,6 +533,7 @@
   // ---- drawing ----
   function draw(now) {
     const t = S.tension;
+    const SC = sphereColors();
     ctx.clearRect(0, 0, W, H);
 
     // ground vignette
@@ -579,7 +596,7 @@
         const ex = sx + Math.cos(ea) * radius * 0.85, ey = sy + Math.sin(ea) * radius * 0.85;
         const mx = (ox + ex) / 2 + Math.cos(ang + Math.PI / 2) * (i - 2.5) * 3 * (1 - t);
         const my = (oy + ey) / 2 + Math.sin(ang + Math.PI / 2) * (i - 2.5) * 3 * (1 - t);
-        ctx.strokeStyle = rgba(mix(C.sphere, C.strain, t), 0.55 + 0.4 * t);
+        ctx.strokeStyle = rgba(mix(SC.body, C.strain, t), 0.55 + 0.4 * t);
         ctx.lineWidth = Math.max(0.6, lerp(5, 0.9, t) * (0.7 + 0.3 * Math.cos(i)));
         ctx.beginPath(); ctx.moveTo(ox, oy); ctx.quadraticCurveTo(mx, my, ex, ey); ctx.stroke();
       }
@@ -589,7 +606,7 @@
     if (S.state === 'flying' && S.trail.length > 1) {
       for (let i = 1; i < S.trail.length; i++) {
         const a = i / S.trail.length;
-        ctx.strokeStyle = rgba(C.sphere, a * 0.35 * alpha);
+        ctx.strokeStyle = rgba(SC.body, a * 0.35 * alpha);
         ctx.lineWidth = radius * 1.4 * a;
         ctx.beginPath(); ctx.moveTo(...S.trail[i - 1]); ctx.lineTo(...S.trail[i]); ctx.stroke();
       }
@@ -617,15 +634,15 @@
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(sx, sy); ctx.rotate(dirA); ctx.scale(stretch * scale, squash * scale); ctx.rotate(-dirA);
-    const body = mix(C.sphere, C.strain, t * 0.75);
+    const body = mix(SC.body, C.strain, t * 0.75);
     const g = ctx.createRadialGradient(-radius * 0.35, -radius * 0.4, radius * 0.08, 0, 0, radius);
-    g.addColorStop(0, rgba(mix(C['sphere-hi'], [255, 255, 255], 0.4)));
-    g.addColorStop(0.25, rgba(mix(body, C['sphere-hi'], 0.35)));
+    g.addColorStop(0, rgba(mix(SC.hi, [255, 255, 255], 0.4)));
+    g.addColorStop(0.25, rgba(mix(body, SC.hi, 0.35)));
     g.addColorStop(0.75, rgba(body));
     g.addColorStop(1, rgba(mix(body, [0, 0, 0], 0.45)));
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.fill();
     // rim light
-    ctx.strokeStyle = rgba(C['sphere-hi'], 0.35); ctx.lineWidth = 1.5;
+    ctx.strokeStyle = rgba(SC.hi, 0.35); ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.arc(0, 0, radius - 1, Math.PI * 0.15, Math.PI * 0.85); ctx.stroke();
     // specular
     ctx.fillStyle = 'rgba(255,255,255,0.75)';
@@ -642,7 +659,7 @@
     // idle breathing hint
     if (S.state === 'held' && !reduceMotion) {
       const p = (now % 2400) / 2400;
-      ctx.strokeStyle = rgba(C.sphere, 0.35 * (1 - p));
+      ctx.strokeStyle = rgba(SC.body, 0.35 * (1 - p));
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(cx, cy, radius * (1.05 + p * 0.6), 0, Math.PI * 2); ctx.stroke();
     }
@@ -652,7 +669,7 @@
       // rAF's timestamp can be slightly older than the performance.now() the hit was stamped with
       const f = flashes[i], age = Math.max(0, (now - f.t0) / 1300);
       if (age >= 1) { flashes.splice(i, 1); continue; }
-      const col = f.tier.name === 'Perfect' ? C.strain : C.sphere;
+      const col = f.tier.name === 'Perfect' ? C.strain : SC.body;
       const fade = 1 - age;
       const rings = f.tier.name === 'Perfect' ? 3 : f.tier.name === 'Great' ? 2 : 1;
       ctx.lineWidth = 3;
