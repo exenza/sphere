@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<script src="config.js"></script>
+<script src="leaderboard.js" defer></script>
 </head>
 <body>
 <title>Sphere</title>
@@ -64,7 +66,8 @@
     font-size: clamp(18px, 3.2vw, 26px); letter-spacing: -0.01em; line-height: 1;
   }
   .sub { margin: 6px 0 0; color: var(--muted); font-size: 13px; max-width: 30ch; text-wrap: balance; }
-  .stats { display: flex; align-items: center; gap: 14px; }
+  .stats { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
+  .stat span { white-space: nowrap; }
   .stat { text-align: right; }
   .stat b { display: block; font-family: var(--font-data); font-weight: 500; font-size: 22px; font-variant-numeric: tabular-nums; line-height: 1; }
   .stat span { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
@@ -93,7 +96,7 @@
   }
   .history i:last-child { opacity: 1; outline: 1px solid var(--fg); outline-offset: 2px; }
   .hint { font-size: 13px; color: var(--muted); }
-  @media (max-width: 480px) { .sub { display: none; } .stat b { font-size: 18px; } }
+  @media (max-width: 480px) { .sub { display: none; } .stat b { font-size: 18px; } .stats { gap: 10px; } .stat span { font-size: 10px; letter-spacing: 0.04em; } }
 </style>
 
 <canvas id="stage" tabindex="0" aria-label="Sphere in its socket. Drag it away from the center, or hold the arrow keys, until it breaks free."></canvas>
@@ -104,6 +107,7 @@
     <p class="sub">Pull the sphere out of its socket. Every new sphere grips with a different strength.</p>
   </div>
   <div class="stats">
+    <div class="stat"><b id="form">–</b><span>perfect · last 20</span></div>
     <div class="stat"><b id="score">0</b><span>score</span></div>
     <div class="stat"><b id="count">0</b><span>freed</span></div>
     <div class="toggles">
@@ -125,6 +129,7 @@
   const ctx = cv.getContext('2d');
   const $count = document.getElementById('count');
   const $score = document.getElementById('score');
+  const $form = document.getElementById('form');
   const $readout = document.getElementById('readout');
   const $history = document.getElementById('history');
   const $hint = document.getElementById('hint');
@@ -176,12 +181,17 @@
   let freed = 0, score = 0;
   const history = [];
   const flashes = [];
-  // Corner hit = touching an x-wall and a y-wall within a few ms of each other (ms of flight time).
+  // Corner hit = when the sphere touches one wall, how far it is from touching the other,
+  // in sphere radii. Distance, not time, so a fast launch doesn't make corners easier.
   const CORNER_TIERS = [
-    { max: 17, name: 'Perfect', pts: 100 },
-    { max: 70, name: 'Great', pts: 40 },
-    { max: 150, name: 'Close', pts: 15 },
+    { max: 0.2, name: 'Perfect', pts: 100 },
+    { max: 0.6, name: 'Great', pts: 40 },
+    { max: 1.2, name: 'Close', pts: 15 },
   ];
+  // Form: perfect throws among the last 20 (1 = the throw hit at least one Perfect corner).
+  const FORM_SIZE = 20;
+  let form = [];
+  try { const f = JSON.parse(localStorage.getItem('sphere.form') || '[]'); if (Array.isArray(f)) form = f.slice(-FORM_SIZE).map(v => v ? 1 : 0); } catch (e) {}
   const pointer = { x: 0, y: 0, down: false, id: null, px: 0, py: 0, vx: 0, vy: 0 };
   const keys = new Set();
   const kbd = { x: 0, y: 0 };
@@ -202,7 +212,7 @@
     S.sat = 0.6 + Math.random() * 0.25;
     S.pos = { x: 0, y: 0 }; S.vel = { x: 0, y: 0 };
     S.tension = 0; S.peak = 0; S.trail = [];
-    S.lastX = null; S.lastY = null; S.chain = 0;
+    S.chain = 0; S.lastCorner = -1e9; S.corners = [];
     S.state = 'spawning'; S.spawnT = 0;
     S.cracks = Array.from({ length: 7 }, (_, i) => {
       const a = (i / 7) * Math.PI * 2 + Math.random() * 0.6;
@@ -230,7 +240,7 @@
 
   function breakFree(dirx, diry) {
     const held = (performance.now() - S.grabStart) / 1000;
-    S.state = 'flying'; S.flyT = 0;
+    S.state = 'flying'; S.flyT = 0; S.heldMs = Math.round(held * 1000);
     const sp = 9 + 16 * S.R;
     S.vel = { x: dirx * sp + pointer.vx * 0.4, y: diry * sp + pointer.vy * 0.4 };
     freed++; $count.textContent = freed;
@@ -420,23 +430,42 @@
   const bump = v => { audio.thud(v); haptics.thud(v); };
 
   // ---- corner scoring ----
-  function wallHit(axis, v) {
-    bump(v);
-    if (axis === 'x') S.lastX = S.flyT; else S.lastY = S.flyT;
-    if (S.lastX === null || S.lastY === null) return;
-    const gap = Math.abs(S.lastX - S.lastY);
-    const tier = CORNER_TIERS.find(t => gap <= t.max);
+  function cornerHit(miss, ax, ay) {
+    if (S.flyT - S.lastCorner < 200) return;   // the second wall of the same corner
+    const tier = CORNER_TIERS.find(t => miss <= t.max);
     if (!tier) return;
-    S.lastX = S.lastY = null;   // each pair of wall hits scores once
+    S.lastCorner = S.flyT;
     S.chain++;
-    // stronger grips launch faster, so they pay more; extra corners in one flight multiply
+    S.corners.push({ tier: tier.name, miss });
+    // stronger grips are harder to pull, so they pay more; extra corners in one flight multiply
     const pts = Math.round(tier.pts * (1 + S.R)) * S.chain;
     score += pts; $score.textContent = score;
-    const x = cx + S.pos.x < W / 2 ? 0 : W, y = cy + S.pos.y < H / 2 ? 0 : H;
+    const x = ax < W / 2 ? 0 : W, y = ay < H / 2 ? 0 : H;
     flashes.push({ x, y, tier, pts, chain: S.chain, t0: performance.now() });
     $readout.innerHTML += ` · <strong>${tier.name} corner +${pts}</strong>${S.chain > 1 ? ` (×${S.chain})` : ''}`;
     audio.chime(tier.name);
     haptics.pulse(tier.name === 'Perfect' ? [20, 30, 20, 30, 70] : tier.name === 'Great' ? [20, 30, 40] : [25]);
+  }
+
+  // A throw ends when its flight does: update the form meter and tell any listener (the leaderboard).
+  function finishThrow() {
+    const perfects = S.corners.filter(c => c.tier === 'Perfect').length;
+    form.push(perfects > 0 ? 1 : 0); if (form.length > FORM_SIZE) form.shift();
+    try { localStorage.setItem('sphere.form', JSON.stringify(form)); } catch (e) {}
+    renderForm();
+    const detail = {
+      resistance: Math.round(S.R * 1000) / 1000,
+      heldMs: S.heldMs,
+      corners: S.corners.length,
+      perfects,
+      bestMiss: S.corners.length ? Math.round(Math.min(...S.corners.map(c => c.miss)) * 1000) / 1000 : null,
+    };
+    window.dispatchEvent(new CustomEvent('sphere:throw', { detail }));
+  }
+  function renderForm() {
+    const k = form.reduce((a, b) => a + b, 0);
+    $form.textContent = form.length ? `${k}/${form.length}` : '–';
+    $form.parentElement.title = `${k} perfect throws in your last ${form.length || FORM_SIZE}`;
   }
 
   // ---- simulation ----
@@ -521,12 +550,31 @@
       S.pos.x += S.vel.x * f; S.pos.y += S.vel.y * f;
       S.tension = Math.max(0, S.tension - 0.05 * f);
       const ax = cx + S.pos.x, ay = cy + S.pos.y;
-      if (ax < radius) { S.pos.x = radius - cx; S.vel.x = Math.abs(S.vel.x) * 0.7; wallHit('x', Math.abs(S.vel.x)); }
-      if (ax > W - radius) { S.pos.x = W - radius - cx; S.vel.x = -Math.abs(S.vel.x) * 0.7; wallHit('x', Math.abs(S.vel.x)); }
-      if (ay < radius) { S.pos.y = radius - cy; S.vel.y = Math.abs(S.vel.y) * 0.7; wallHit('y', Math.abs(S.vel.y)); }
-      if (ay > H - radius) { S.pos.y = H - radius - cy; S.vel.y = -Math.abs(S.vel.y) * 0.7; wallHit('y', Math.abs(S.vel.y)); }
+      // Walls. Step back along the velocity to the exact moment of contact, then measure how far
+      // the sphere was from also touching the other wall: that's the corner miss.
+      const vx0 = S.vel.x, vy0 = S.vel.y;
+      const overX = ax < radius ? radius - ax : ax > W - radius ? ax - (W - radius) : 0;
+      const overY = ay < radius ? radius - ay : ay > H - radius ? ay - (H - radius) : 0;
+      const missTo = (v, lo, hi) => Math.min(Math.abs(v - lo), Math.abs(v - hi)) / radius;
+      let miss = null;
+      if (overX > 0) {
+        const back = Math.abs(vx0) > 0.01 ? overX / Math.abs(vx0) : 0;
+        miss = missTo(ay - vy0 * back, radius, H - radius);
+        S.pos.x = (ax < radius ? radius : W - radius) - cx;
+        S.vel.x = (ax < radius ? 1 : -1) * Math.abs(vx0) * 0.7;
+        bump(Math.abs(S.vel.x));
+      }
+      if (overY > 0) {
+        const back = Math.abs(vy0) > 0.01 ? overY / Math.abs(vy0) : 0;
+        const m = missTo(ax - vx0 * back, radius, W - radius);
+        miss = miss === null ? m : Math.min(miss, m);
+        S.pos.y = (ay < radius ? radius : H - radius) - cy;
+        S.vel.y = (ay < radius ? 1 : -1) * Math.abs(vy0) * 0.7;
+        bump(Math.abs(S.vel.y));
+      }
+      if (miss !== null) cornerHit(miss, ax, ay);
       S.trail.push([ax, ay]); if (S.trail.length > 18) S.trail.shift();
-      if (S.flyT > 1800) spawn();
+      if (S.flyT > 1800) { finishThrow(); spawn(); }
     }
   }
 
@@ -706,6 +754,7 @@
       history.push(...data.history.slice(-12));
       $history.innerHTML = history.map(r => `<i style="--r:${r}" title="${r}%"></i>`).join('');
     }
+    renderForm();
     spawn();
     requestAnimationFrame(t => { last = t; loop(t); });
   }
