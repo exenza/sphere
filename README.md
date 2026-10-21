@@ -23,7 +23,7 @@ Points are multiplied by `1 + resistance` (stronger grips are harder to pull), a
 A Perfect freezes that corner, so you can't keep scoring on the same one:
 
 - **A frozen corner scores nothing.** Hits there chip the ice instead.
-- **A Perfect on the opposite corner thaws it** at once. The corner you hit stays open.
+- **The opposite corner bursts into flames** as a clue. A Perfect there sets the sphere on fire: it heads straight for the iced corner without slowing down and melts the ice when it arrives. The corner you hit stays open, and the melt itself isn't a new corner hit.
 - **Or smash it.** Each hit does damage equal to the impact speed × the sphere's weight, and damage adds up. Weight goes from 0.6 for a loose sphere to 1.6 for a welded one, and stronger grips also launch faster, so a strong sphere hitting the ice straight away hits hardest. Each new freeze gets a random strength (12 to 45), shown as how thick the ice looks.
 - At most one corner of each diagonal can be frozen, so two corners are always open.
 
