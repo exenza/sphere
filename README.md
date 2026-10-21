@@ -8,15 +8,21 @@ The grip gives way at a limited speed: about half a second of steady pulling for
 
 ## Scoring
 
-Aim the sphere so it flies into a corner. A corner counts when it touches both walls almost at the same moment:
+Aim the sphere so it flies into a corner. When it touches one wall, the game measures how far it is from touching the other one, in sphere radii. Distance rather than time, so a fast launch doesn't make corners easier.
 
-| Hit | Time between the two walls | Base points |
+| Hit | Distance from the other wall | Base points |
 | --- | --- | --- |
-| Perfect | up to 17 ms | 100 |
-| Great | up to 70 ms | 40 |
-| Close | up to 150 ms | 15 |
+| Perfect | up to 0.2 radius | 100 |
+| Great | up to 0.6 radius | 40 |
+| Close | up to 1.2 radius | 15 |
 
-Points are multiplied by `1 + resistance` (stronger grips launch faster), and each extra corner in the same flight multiplies again (×2, ×3…).
+Points are multiplied by `1 + resistance` (stronger grips are harder to pull), and each extra corner in the same flight multiplies again (×2, ×3…).
+
+**Perfect · last 20** in the top bar shows how many of your last 20 throws hit at least one Perfect corner. It is kept in your browser.
+
+## Leaderboard (optional)
+
+Players can sign in with GitHub to join a seasonal leaderboard, stored in Supabase. It stays switched off until `html/config.js` has a Supabase project URL and anon key; see [LEADERBOARD.md](LEADERBOARD.md) for how it works and how to set it up.
 
 ## Run
 
